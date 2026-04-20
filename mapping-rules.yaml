@@ -1,0 +1,802 @@
+mapping_rules:
+  version: "1.1"
+  description: "Операционные правила маппинга произвольных черновиков в целевую STO-модель. Спецификация ориентирована на прямую реализацию в Parser + Semantic Mapper."
+
+  target_model:
+    root_required_paths:
+      - "meta"
+      - "content"
+      - "reporting_documents"
+      - "responsibility"
+      - "appendices"
+    mandatory_content_paths:
+      - "content.area"
+      - "content.normative_references"
+      - "content.terms"
+      - "content.main"
+    excluded_from_main:
+      - "service_sheets.change_log"
+      - "service_sheets.acquaintance"
+      - "service_sheets.approval"
+
+  processing_pipeline:
+    ordered_steps:
+      - "step_01_preprocess"
+      - "step_02_structure_detection"
+      - "step_03_candidate_generation"
+      - "step_04_scoring_and_resolution"
+      - "step_05_target_projection"
+      - "step_06_post_validation"
+    step_01_preprocess:
+      actions:
+        - "Normalize whitespace and dashes (—, –, - -> -)."
+        - "Normalize OCR mistakes for common markers: 'CТO' -> 'СТО', 'Bвeдeн' -> 'Введен'."
+        - "Attach source coordinates for each block: page_index, block_index, line_range."
+    step_02_structure_detection:
+      actions:
+        - "Classify each block: heading | paragraph | list_item | table | image | caption | footer | header."
+        - "Build preliminary section graph using numbering and heading level."
+    step_03_candidate_generation:
+      actions:
+        - "For each block, produce 1..N candidate targets using section patterns and regex library."
+    step_04_scoring_and_resolution:
+      actions:
+        - "Compute weighted score per candidate."
+        - "Resolve conflicts by tie-break strategy."
+    step_05_target_projection:
+      actions:
+        - "Map normalized entities to schema paths with strict field contracts."
+    step_06_post_validation:
+      actions:
+        - "Enforce mandatory sections and service sheet exclusion."
+        - "Emit warnings for missing required fields and low-confidence mappings."
+
+  scoring_model:
+    weights:
+      heading_match: 0.35
+      lexical_markers: 0.25
+      positional_context: 0.15
+      structural_context: 0.15
+      schema_fit: 0.10
+    thresholds:
+      accept: 0.78
+      review: 0.60
+      reject: 0.40
+    tie_break_order:
+      - "explicit_heading_match"
+      - "mandatory_section_priority"
+      - "section_position_in_document"
+      - "schema_fit"
+      - "semantic_similarity"
+    mandatory_section_priority:
+      - "content.area"
+      - "content.normative_references"
+      - "content.terms"
+      - "content.main"
+
+  regex_library:
+    sto_number: "(СТО\\s*)?31025229[-–]\\d{3}[-–]\\d{4}"
+    numbered_h1: "^\\s*(\\d{1,2})\\s+(.+?)\\s*$"
+    numbered_h2: "^\\s*(\\d{1,2}\\.\\d{1,3})\\s+(.+?)\\s*$"
+    numbered_h3: "^\\s*(\\d{1,2}\\.\\d{1,3}\\.\\d{1,3})\\s+(.+?)\\s*$"
+    appendix_header: "^\\s*Приложение\\s+([A-Za-zА-Яа-яЁё]{1,3})\\b"
+    table_caption: "^\\s*Таблица\\s+\\d+[\\.:]?\\s*(.*)$"
+    figure_caption: "^\\s*(Рисунок|Схема|Блок-схема)\\s+\\d+[\\.:]?\\s*(.*)$"
+    first_introduced: "(?i)введ[её]н\\s+впервые"
+    replaces_sto: "(?i)взамен\\s+(СТО\\s*31025229[-–]\\d{3}[-–]\\d{4})"
+    order_line: "(?i)от\\s+([0-3]?\\d[\\.\\-/][01]?\\d[\\.\\-/](?:20)?\\d{2,4}|\\d{4}-\\d{2}-\\d{2})\\s*№\\s*([A-Za-zА-Яа-я0-9\\-/]+)"
+    normative_id: "(ГОСТ|СТО|ISO|IEC|Приказ|ФЗ|РД)\\s*[A-Za-zА-Яа-я0-9\\.\\-/– ]+"
+
+  heading_detection:
+    rules:
+      - id: "HD-01"
+        condition: "Matches regex_library.numbered_h1"
+        result: "heading_level=1"
+        priority: high
+      - id: "HD-02"
+        condition: "Matches regex_library.numbered_h2"
+        result: "heading_level=2"
+        priority: high
+      - id: "HD-03"
+        condition: "Matches regex_library.numbered_h3"
+        result: "heading_level=3"
+        priority: high
+      - id: "HD-04"
+        condition: "Short isolated line <=120 chars, bold style, next block paragraph"
+        result: "heading_level=estimated"
+        priority: medium
+    title_normalization:
+      - "Remove leading markers: 'Раздел', 'Section', 'Пункт', 'Chapter'."
+      - "Collapse duplicate spaces."
+      - "Trim trailing punctuation for heading candidates."
+
+  general_principles:
+    - "Структурные сигналы имеют приоритет над лексическими совпадениями."
+    - "Каждый block_id должен иметь mapping_trace с final_target и decision_reason."
+    - "Ни один блок не теряется: unclassified блоки сохраняются в notes/extra_attributes."
+    - "Для confidence < review использовать delayed mapping и повторный проход после построения секционного графа."
+    - "Любой блок, распознанный как service_sheet, жестко исключается из content.main."
+
+  meta_mapping:
+    - id: "META-01"
+      source_patterns: ["СТО 31025229-", "СТО 31025229–"]
+      target: "meta.sto_number"
+      priority: high
+      extraction_regex: "regex_library.sto_number"
+      fallback: "search_in_headers_and_footers"
+    - id: "META-02"
+      source_patterns: ["УТВЕРЖДАЮ", "УТВЕРЖДЕНО"]
+      target: "meta.approval"
+      priority: high
+      extraction:
+        approver_position: "line_after_marker_if_contains_role"
+        approver_name: "next_line_if_person_pattern"
+        approval_date: "nearest_date_in_3_lines_window"
+    - id: "META-03"
+      source_patterns: ["Введен в действие Приказом", "Введён в действие Приказом", "Приказ"]
+      target: "meta.approval.order_number, meta.approval.order_date"
+      priority: high
+      extraction_regex: "regex_library.order_line"
+    - id: "META-04"
+      source_patterns: ["Дата введения", "Вступает в силу", "Вводится в действие"]
+      target: "meta.effective_date"
+      priority: high
+      extraction: "nearest_valid_date_in_same_or_next_line"
+    - id: "META-05"
+      source_patterns: ["Введен впервые", "Введён впервые"]
+      target: "meta.approval.first_introduced"
+      priority: high
+      value: true
+    - id: "META-06"
+      source_patterns: ["Взамен СТО", "Взамен"]
+      target: "meta.approval.introduced_instead_of, meta.replaces"
+      priority: high
+      extraction_regex: "regex_library.replaces_sto"
+    conflict_resolution:
+      first_introduced_vs_replaces:
+        algorithm:
+          - "If only first_introduced marker -> first_introduced=true, replaces=null."
+          - "If only replaces marker -> first_introduced=false, replaces=<extracted STO>."
+          - "If both markers found -> use marker nearest to approval block; other marker goes to meta.approval.extra_attributes.conflict_markers."
+
+  section_mapping:
+    - id: "SEC-AREA-01"
+      source_patterns: ["Область применения", "Scope", "Назначение", "Область действия", "Применимость"]
+      target: "content.area"
+      priority: high
+      lexical_markers:
+        positive: ["настоящий стандарт устанавливает", "распространяется на", "обязателен для применения"]
+        negative: ["порядок выполнения", "этап", "шаг", "процедура"]
+      extraction_algorithm:
+        - "Select heading block matching source_patterns."
+        - "Collect paragraphs until next heading level <= current."
+        - "If negative markers density > positive markers density, remap to content.main."
+    - id: "SEC-NR-01"
+      source_patterns: ["Нормативные ссылки", "Нормативная база", "Ссылочные документы", "Регламентирующие документы"]
+      target: "content.normative_references"
+      priority: high
+      extraction_algorithm:
+        - "Collect list items/paragraph lines in section."
+        - "Split per line if line contains regex_library.normative_id."
+        - "For each line build object: reference_id/title/year/issuer/notes."
+      field_rules:
+        reference_id: "first regex_library.normative_id match"
+        year: "4-digit year if present"
+        title: "remaining text after reference_id and year tokens"
+      quality_rules:
+        - "Remove duplicates by normalized(reference_id+title)."
+        - "Empty lines are ignored."
+    - id: "SEC-TERM-01"
+      source_patterns: ["Термины", "Определения", "Сокращения", "Термины и определения", "Термины, определения и сокращения"]
+      target: "content.terms"
+      priority: high
+      extraction_algorithm:
+        - "Detect intro paragraph before first pair-like line."
+        - "Pattern A: '<term>: <definition>' -> entries."
+        - "Pattern B: '<abbr> - <definition>' or '<abbr> – <definition>' -> abbreviations."
+        - "Pattern C: numbered list with delimiter ':' -> entries."
+      regex:
+        term_pair: "^\\s*([^:]{2,120})\\s*:\\s*(.{3,})$"
+        abbr_pair: "^\\s*([A-ZА-ЯЁ0-9]{2,15})\\s*[-–]\\s*(.{2,})$"
+    - id: "SEC-MAIN-01"
+      source_patterns: ["Основная часть", "Порядок", "Процедура", "Правила", "Требования", "Описание процесса", "Порядок выполнения"]
+      target: "content.main"
+      priority: high
+      handling: "recursive_section_detection"
+      extraction_algorithm:
+        - "Start at first heading after terms section or first numbered heading >=4."
+        - "Build nested tree using section numbering and heading levels."
+        - "Attach tables/images/lists by nearest active section scope."
+
+  recursive_section_detection:
+    objective: "Построить устойчивое дерево разделов при идеальной и неидеальной нумерации."
+    heading_sources:
+      primary: ["regex_library.numbered_h1", "regex_library.numbered_h2", "regex_library.numbered_h3"]
+      secondary: ["style-based headings", "isolated short heading candidates"]
+    algorithm:
+      - "A1: Scan blocks, detect heading candidates, assign provisional section_code (e.g., 4, 4.1, 4.1.2)."
+      - "A2: Maintain stack of active sections; push/pop by detected depth."
+      - "A3: If heading is unnumbered but style-based and located between numbered siblings, inherit nearest plausible depth."
+      - "A4: If numbering jumps (4.1 -> 4.3), keep sequence, emit warning RSD-W01."
+      - "A5: If duplicate section code appears, append suffix in internal key (e.g., 4.2#2) but keep original section_number text."
+      - "A6: If malformed number (e.g., 4..1), normalize to 4.1 and emit warning RSD-W02."
+      - "A7: Stop main-section capture when appendix header or service sheet header is reached."
+    depth_rules:
+      - "Depth 1: X"
+      - "Depth 2: X.Y"
+      - "Depth 3: X.Y.Z"
+      - "Depth fallback: style-derived level"
+    block_assignment:
+      paragraphs: "Assign to closest active section before next same-or-higher depth heading."
+      lists: "Append to section.bullet_points and also keep in section.content."
+      tables: "Route by table_priority_matrix."
+      images: "Route by image_priority_matrix."
+
+  responsibility_mapping:
+    - id: "RESP-01"
+      source_patterns: ["Ответственность", "Распределение ответственности", "Кто отвечает", "Ответственные лица", "Полномочия и ответственность"]
+      target: "responsibility"
+      priority: high
+      extraction_algorithm:
+        - "Detect role blocks by heading or role-like phrase ('начальник', 'менеджер', 'специалист', 'руководитель')."
+        - "Collect following bullet/list lines as responsibilities."
+        - "Extract authority lines by markers: 'имеет право', 'вправе', 'уполномочен'."
+      normalization:
+        title: "Ответственность"
+        role_cleanup: "trim punctuation and normalize spaces"
+
+  reporting_documents_mapping:
+    - id: "REP-01"
+      source_patterns: ["Отчетные документы", "Отчётные документы", "Отчетность", "Отчётность", "Документы учета", "Первичные документы", "Формы отчетности"]
+      target: "reporting_documents"
+      priority: high
+      extraction_algorithm:
+        - "If table exists: each row -> one reporting_documents item."
+        - "If pseudo-table/list: extract by lexical slots."
+      required_fields:
+        document_name:
+          markers: ["наименование", "документ", "форма"]
+        responsible_role:
+          markers: ["ответственный", "исполнитель", "кто ведет", "кто ведёт"]
+        storage_location:
+          markers: ["место хранения", "хранение", "архив", "папка"]
+        retention_period:
+          markers: ["срок хранения", "период хранения", "хранить"]
+      fallback_policy:
+        - "Missing required field -> keep row, set null, append warning REP-W01 with row index."
+
+  appendices_mapping:
+    - id: "APP-01"
+      source_patterns: ["Приложение", "Приложения", "Прил. А", "Прил. Б", "Бланк", "Форма", "Шаблон"]
+      target: "appendices"
+      priority: high
+      extraction_algorithm:
+        - "Detect appendix boundaries using regex_library.appendix_header."
+        - "Extract appendix_id from header."
+        - "Detect status in header or first paragraph."
+        - "Route internal content into content_text/sections/tables/images."
+      status_detection:
+        mandatory_markers: ["обязательное", "обязат."]
+        recommended_markers: ["рекомендуемое", "реком."]
+        reference_markers: ["справочное", "справ."]
+        fallback: "справочное"
+      consistency_checks:
+        - "Appendix IDs should be unique."
+        - "If appendix referenced in main but missing physically -> create placeholder with notes."
+
+  service_sheets_mapping:
+    hard_exclusion_from_main: true
+    detection_rules:
+      - id: "SRV-01"
+        source_patterns: ["Лист регистрации изменений"]
+        target: "meta.extra_attributes.service_sheets.change_log"
+        mandatory_table_columns: ["номер изменения", "дата", "подпись"]
+      - id: "SRV-02"
+        source_patterns: ["Лист ознакомления"]
+        target: "meta.extra_attributes.service_sheets.acquaintance"
+        mandatory_table_columns: ["ФИО", "должность", "подпись", "дата"]
+      - id: "SRV-03"
+        source_patterns: ["Лист согласования", "СОГЛАСОВАНО"]
+        target: "meta.extra_attributes.service_sheets.approval"
+        mandatory_table_columns: ["должность", "ФИО", "подпись", "дата"]
+    exclusion_algorithm:
+      - "If section heading matches any SRV rule, set section_class=service_sheet."
+      - "Service-sheet blocks must never be projected to content.main."
+      - "If parser already attached them to main, perform post-pass purge and remap to meta.extra_attributes.service_sheets."
+
+  table_and_media_mapping:
+    table_detection:
+      strict_conditions:
+        - "Grid-like structure with >=2 rows and >=2 columns."
+        - "Or caption match with regex_library.table_caption."
+      pseudo_table_conditions:
+        - "Multiple lines with consistent delimiters (; | tab)."
+      output_contract:
+        - "table_id"
+        - "title"
+        - "columns[]"
+        - "rows[]"
+        - "source_page"
+    table_priority_matrix:
+      - when: "inside reporting_documents section"
+        target: "reporting_documents"
+        priority: 100
+      - when: "inside service_sheet section"
+        target: "meta.extra_attributes.service_sheets.*"
+        priority: 95
+      - when: "inside appendix section"
+        target: "appendices[].tables"
+        priority: 90
+      - when: "inside main section"
+        target: "content.main[].tables"
+        priority: 80
+      - when: "unscoped"
+        target: "content.main[last].tables"
+        priority: 50
+    image_detection:
+      strict_markers: ["Рисунок", "Схема", "Блок-схема", "Figure"]
+      caption_regex: "regex_library.figure_caption"
+      output_contract:
+        - "image_id"
+        - "title"
+        - "caption"
+        - "path_or_uri"
+        - "source_page"
+    image_priority_matrix:
+      - when: "inside appendix section"
+        target: "appendices[].images"
+        priority: 90
+      - when: "caption contains 'блок-схема' or 'workflow' or 'алгоритм'"
+        target: "content.document_flow_diagrams"
+        priority: 88
+      - when: "inside main section"
+        target: "content.main[].images"
+        priority: 80
+      - when: "unscoped"
+        target: "content.main[last].images"
+        priority: 50
+
+  formatting_rules:
+    - "Heading level определяется по numbering regex + style fallback."
+    - "Параграф отличается от таблицы отсутствием повторяемой колонной структуры."
+    - "Подпись 'Таблица N' привязывается к ближайшей таблице ниже, иначе к ближайшей выше (до 3 блоков)."
+    - "Подпись 'Рисунок/Схема N' привязывается к ближайшему image-блоку в окне 3 блоков."
+    - "Списки сохраняются как текст и как bullet_points для аналитики."
+    - "Служебные листы не участвуют в content.main даже при ошибочном заголовке нумерации."
+
+  ambiguity_resolution:
+    real_world_cases:
+      - case_id: "AMB-01"
+        scenario: "Заголовок 'Назначение' встречается в середине процедурного документа."
+        resolution: "If process verbs density >= 0.12 then map to content.main, else content.area."
+      - case_id: "AMB-02"
+        scenario: "Таблица 'Форма отчета' расположена в основной части без явного 'Приложение'."
+        resolution: "If text contains 'форма' + 'заполняется по' + cross-reference, map to appendices placeholder + keep source in main notes."
+      - case_id: "AMB-03"
+        scenario: "Раздел 'Общие положения' содержит и scope, и ответственность."
+        resolution: "Split paragraph-by-paragraph: scope markers -> content.area, role-action markers -> responsibility.entries."
+      - case_id: "AMB-04"
+        scenario: "Ссылка на приложение есть, но блок приложения отсутствует."
+        resolution: "Create synthetic appendix with inferred id/status=справочное, notes='created_by_mapper_missing_source'."
+      - case_id: "AMB-05"
+        scenario: "Раздел 'Отчетность' оформлен нумерованными абзацами, без таблицы."
+        resolution: "Create reporting_documents rows by slot extraction from each paragraph."
+      - case_id: "AMB-06"
+        scenario: "Лист согласования ошибочно нумерован как '10'."
+        resolution: "service_sheet classifier overrides numbering; exclude from main."
+    orphan_content_policy:
+      - "Confidence < reject -> store in meta.extra_attributes.unclassified_blocks[] with raw_text and coordinates."
+      - "reject <= confidence < review -> attach to nearest active section notes with flag low_confidence=true."
+    conflict_logging:
+      required_fields:
+        - "block_id"
+        - "candidate_targets"
+        - "final_target"
+        - "scores"
+        - "resolution_rule_id"
+        - "timestamp"
+
+  special_cases:
+    - id: "SP-01"
+      description: "Черновик без явных заголовков"
+      handling:
+        - "Run topic segmentation by marker windows (scope/normative/terms/process/reporting/responsibility)."
+        - "Generate synthetic section headings and then run recursive_section_detection."
+    - id: "SP-02"
+      description: "Положение с большими блоками 'Общие положения'"
+      handling:
+        - "Split into semantic sentences; remap by marker dictionaries."
+    - id: "SP-03"
+      description: "Регламент с глубокой процедурной иерархией и пропусками нумерации"
+      handling:
+        - "Allow sparse numbering without auto-generated missing nodes."
+        - "Use stack-based depth recovery."
+    - id: "SP-04"
+      description: "Отчетный документ с преобладанием таблиц"
+      handling:
+        - "Apply table_priority_matrix before any semantic remap."
+    - id: "SP-05"
+      description: "Документ с большим количеством форм и бланков"
+      handling:
+        - "If heading or caption contains 'форма|бланк|шаблон', prioritize appendices."
+    - id: "SP-06"
+      description: "Вариативные формулировки введения в действие"
+      handling:
+        - "Search entire document for first_introduced and replaces markers."
+        - "Resolve by META conflict rule."
+    - id: "SP-07"
+      description: "HR-документ с ролями внутри процедурных пунктов"
+      handling:
+        - "Extract role-action statements into responsibility while retaining procedural paragraph in main."
+
+  draft_profiles:
+    - profile_name: "Регламент заявки техники"
+      cues: ["заявка", "согласование заявки", "диспетчер", "механик", "срок исполнения"]
+      strong_rules:
+        - "Process step blocks -> content.main."
+        - "Role obligations -> responsibility."
+        - "Application forms -> appendices."
+    - profile_name: "Материально-технические отчеты"
+      cues: ["ведомость", "учет ТМЦ", "склад", "срок хранения", "архив"]
+      strong_rules:
+        - "Accounting/report tables -> reporting_documents."
+        - "Inventory procedure text -> content.main."
+    - profile_name: "Управление персоналом"
+      cues: ["подбор", "адаптация", "обучение", "оценка персонала", "руководитель подразделения"]
+      strong_rules:
+        - "HR process flows -> content.main."
+        - "HR role duties -> responsibility."
+        - "Checklists and forms -> appendices (unless explicitly reporting)."
+
+  implementation_contract:
+    parser_input:
+      - "source_document_binary_or_text"
+      - "optional_ocr_output"
+    parser_output_blocks:
+      required_fields:
+        - "block_id"
+        - "page_index"
+        - "block_type"
+        - "raw_text"
+        - "normalized_text"
+        - "heading_level"
+        - "numbering_token"
+        - "bbox_or_position"
+      optional_fields:
+        - "table_grid"
+        - "image_ref"
+        - "style_flags"
+        - "caption_ref"
+    mapper_input:
+      - "parser_output_blocks"
+      - "mapping_rules.version"
+      - "lexical_dictionaries"
+    mapper_output:
+      required:
+        - "sto_document_json (schema-compatible)"
+        - "mapping_trace[]"
+        - "warnings[]"
+        - "errors[]"
+        - "service_sheet_extract"
+      mapping_trace_item_fields:
+        - "block_id"
+        - "source_text_excerpt"
+        - "candidate_targets"
+        - "final_target"
+        - "confidence"
+        - "rule_ids"
+    runtime_validation:
+      - "Assert all target paths exist in schema."
+      - "Assert mandatory content sections are mapped or explicitly flagged missing."
+      - "Assert service sheets absent in content.main."
+      - "Assert reporting_documents rows keep required fields (or null + warning)."
+
+  quality_gates:
+    - id: "QG-01"
+      check: "No service sheet block in content.main."
+      severity: error
+    - id: "QG-02"
+      check: "content.area, content.normative_references, content.terms, content.main present."
+      severity: error
+    - id: "QG-03"
+      check: "All appendices have id/title/status."
+      severity: error
+    - id: "QG-04"
+      check: "Each reporting_documents row has required fields or REP-W01 warning."
+      severity: warning
+    - id: "QG-05"
+      check: "All low-confidence mappings (<0.60) are listed in warnings."
+      severity: warning
+mapping_rules:
+  version: "1.0"
+  description: "Детальные правила маппинга произвольных черновиков (регламенты, положения, порядки, инструкции) в целевую модель STOFabric по СТО 31025229-001-2024."
+
+  target_model:
+    root_required_paths:
+      - "meta"
+      - "content"
+      - "reporting_documents"
+      - "responsibility"
+      - "appendices"
+    critical_paths:
+      - "content.area"
+      - "content.normative_references"
+      - "content.terms.entries"
+      - "content.terms.abbreviations"
+      - "content.main"
+      - "responsibility.entries"
+      - "reporting_documents"
+      - "appendices"
+
+  general_principles:
+    - "Приоритет распознавания: structural_markers > heading_patterns > lexical_markers > semantic_similarity."
+    - "Каждый фрагмент источника получает confidence_score от 0.0 до 1.0 и candidate_targets."
+    - "Финальный target выбирается по weighted score: 0.40*heading + 0.30*keywords + 0.20*position + 0.10*schema_fit."
+    - "Если confidence_score < 0.65, применяется staged mapping: временный target + повторная оценка после построения полной структуры документа."
+    - "Каждый перенос фиксирует trace: source_page, source_block_id, source_heading, target_path, decision_reason."
+    - "Контент не теряется: неразобранные фрагменты сохраняются в notes/extra_attributes соответствующего раздела."
+    - "Любой блок, похожий на обязательный раздел СТО, получает приоритет high даже при неполных заголовках."
+    - "Маппинг выполняется в два прохода: pass1 (структура и якоря), pass2 (семантическая детализация и reconciliation)."
+
+  heading_detection:
+    heading_level_rules:
+      - rule: "Если абзац начинается с ^\\d+\\s+ и следующий заголовок начинается с ^\\d+\\.\\d+\\s+, считать Heading1."
+      - rule: "Если абзац начинается с ^\\d+\\.\\d+\\s+, считать Heading2."
+      - rule: "Если абзац начинается с ^\\d+\\.\\d+\\.\\d+\\s+, считать Heading3."
+      - rule: "Если есть стилевые признаки (bold + отдельная строка + без завершающей точки), повышать вероятность заголовка."
+      - rule: "Короткие строки (<= 120 символов) между двумя текстовыми блоками с большими интервалами считать кандидатами заголовков."
+    title_normalization:
+      - "Удалять служебные префиксы: 'Раздел', 'Section', 'Пункт', 'Chapter'."
+      - "Унифицировать тире: '–' и '-' приводить к '-'."
+      - "Схлопывать множественные пробелы."
+      - "Сохранять исходный текст заголовка в trace для аудита."
+
+  meta_mapping:
+    - source_patterns: ["СТО 31025229-", "СТО 31025229–"]
+      target: "meta.sto_number"
+      priority: high
+      extraction: "regex: (СТО\\s*)?31025229[-–]\\d{3}[-–]\\d{4}"
+      notes: "Искать в титульной части, колонтитулах и блоках утверждения."
+    - source_patterns: ["СТАНДАРТ ОРГАНИЗАЦИИ", "Положение", "Регламент", "Порядок"]
+      target: "meta.title"
+      priority: high
+      extraction: "Брать ближайший крупный заголовок под кодом СТО."
+      notes: "Если найдено несколько заголовков, выбирать наиболее длинный и предметный."
+    - source_patterns: ["Версия", "Ред.", "Редакция", "Изм."]
+      target: "meta.version"
+      priority: medium
+      extraction: "regex: (Версия|Ред\\.?|Редакция|Изм\\.)\\s*[:№]?\\s*([A-Za-zА-Яа-я0-9\\.-]+)"
+    - source_patterns: ["УТВЕРЖДАЮ", "УТВЕРЖДЕНО"]
+      target: "meta.approval"
+      priority: high
+      extraction: "Извлечь approver_position, approver_name, approval_date из блока утверждения."
+    - source_patterns: ["Введен в действие Приказом", "Введён в действие Приказом", "Приказ"]
+      target: "meta.approval.order_number, meta.approval.order_date"
+      priority: high
+      extraction: "regex: от\\s+(.+?)\\s+№\\s*([A-Za-zА-Яа-я0-9\\-/]+)"
+    - source_patterns: ["Дата введения", "Вступает в силу", "Вводится в действие"]
+      target: "meta.effective_date, meta.approval.effective_date"
+      priority: high
+    - source_patterns: ["Введен впервые", "Введён впервые", "введен впервые"]
+      target: "meta.approval.first_introduced"
+      priority: high
+      value: true
+      notes: "При наличии этого маркера автоматически очищать introduced_instead_of и meta.replaces."
+    - source_patterns: ["Взамен СТО", "Взамен", "Взамін"]
+      target: "meta.approval.introduced_instead_of, meta.replaces"
+      priority: high
+      extraction: "regex: Взамен\\s+(СТО\\s*31025229[-–]\\d{3}[-–]\\d{4})"
+      notes: "Если одновременно найдено 'Введен впервые', приоритет у более позднего по позиции маркера."
+
+  section_mapping:
+    - source_patterns: ["Область применения", "Scope", "Назначение", "Цель", "Область действия", "Применимость"]
+      target: "content.area"
+      priority: high
+      notes: "Предпочитать первый предметный раздел после содержания."
+      conflict_resolution: "Если заголовок 'Назначение' и текст содержит процессные шаги, перенаправить в content.main."
+
+    - source_patterns: ["Нормативные ссылки", "Нормативная база", "Ссылочные документы", "Регламентирующие документы"]
+      target: "content.normative_references"
+      priority: high
+      notes: "Извлекать как массив объектов reference_id/title/year/issuer."
+      parsing_rules:
+        - "Каждая строка списка с маркерами ГОСТ/СТО/ISO/Приказ -> новый элемент normative_reference."
+        - "Если год не извлечен уверенно, сохранять строку целиком в title и добавлять notes."
+
+    - source_patterns: ["Термины", "Определения", "Сокращения", "Термины и определения", "Термины, определения и сокращения"]
+      target: "content.terms"
+      priority: high
+      notes: "Разделять entries и abbreviations по шаблонам оформления."
+      parsing_rules:
+        - "Формат '<термин>: <определение>' -> content.terms.entries[]."
+        - "Формат '<АББР> - <расшифровка>' или '<АББР> – <расшифровка>' -> content.terms.abbreviations[]."
+        - "Вводный абзац без пар term/definition -> content.terms.intro."
+
+    - source_patterns: ["Основная часть", "Порядок", "Процедура", "Правила", "Требования", "Описание процесса", "Порядок выполнения"]
+      target: "content.main"
+      priority: high
+      handling: "recursive_section_detection"
+      notes: "Строить дерево section/subsections по нумерации и уровням заголовков."
+
+    - source_patterns: ["Контроль", "Мониторинг", "Оценка", "Проверка выполнения"]
+      target: "content.main"
+      priority: medium
+      notes: "Если блок автономен и имеет собственный заголовок, создавать отдельный раздел main."
+
+  recursive_section_detection:
+    numbering_patterns:
+      - "^\\d+\\s+.+$"
+      - "^\\d+\\.\\d+\\s+.+$"
+      - "^\\d+\\.\\d+\\.\\d+\\s+.+$"
+    tree_building_rules:
+      - "Новый номер верхнего уровня (4,5,6...) закрывает предыдущий top-level section."
+      - "Номер X.Y прикрепляется к ближайшему родителю X."
+      - "Номер X.Y.Z прикрепляется к ближайшему родителю X.Y."
+      - "Если нумерация отсутствует, использовать Heading level и последовательность появления."
+      - "Если есть разрыв нумерации (например, 4.1 -> 4.3), не создавать фиктивные разделы; фиксировать warning."
+    content_assignment_rules:
+      - "Текст между заголовком раздела и первым подзаголовком записывать в section.content."
+      - "Маркированные/нумерованные списки сохранять в bullet_points при сохранении текста в content."
+      - "Таблицы и изображения, расположенные до следующего заголовка того же или более высокого уровня, привязывать к текущему section."
+
+  responsibility_mapping:
+    - source_patterns: ["Ответственность", "Распределение ответственности", "Кто отвечает", "Ответственные лица", "Полномочия и ответственность"]
+      target: "responsibility"
+      priority: high
+      parsing_rules:
+        - "Каждый подзаголовок с ролью/должностью -> responsibility.entries[].role."
+        - "Пункты под ролью -> responsibility.entries[].responsibilities[]."
+        - "Фразы с 'имеет право', 'уполномочен', 'вправе' -> responsibility.entries[].authority[]."
+      notes: "Заголовок блока принудительно нормализовать в const 'Ответственность'."
+
+  reporting_documents_mapping:
+    - source_patterns: ["Отчетные документы", "Отчётные документы", "Отчетность", "Отчётность", "Документы учета", "Документы учёта", "Первичные документы", "Формы отчетности"]
+      target: "reporting_documents"
+      priority: high
+      parsing_rules:
+        - "Если обнаружена таблица, каждая строка -> reporting_documents[]."
+        - "Если обнаружен список, извлекать document_name/responsible_role/storage_location/retention_period по лексическим маркерам."
+        - "Сопоставление заголовков колонок по синонимам: 'Ответственный/Исполнитель', 'Хранение/Место хранения', 'Срок/Период хранения'."
+      required_fields:
+        - "document_name"
+        - "responsible_role"
+        - "storage_location"
+        - "retention_period"
+      conflict_resolution: "При отсутствии части полей сохранять строку, пропущенные значения заполнять null и фиксировать warning."
+
+  appendices_mapping:
+    - source_patterns: ["Приложение", "Приложения", "Формы", "Бланки", "Шаблоны", "Прил. А", "Прил. Б"]
+      target: "appendices"
+      priority: high
+      status_detection: "по ключевым словам (обязательное, рекомендуемое, справочное)"
+      parsing_rules:
+        - "Извлекать appendix_id по regex: Приложение\\s+([A-Za-zА-Яа-яЁё]{1,3})."
+        - "Если статус не найден в заголовке, искать в первой строке под заголовком."
+        - "Контент после заголовка приложения до следующего приложения/служебного листа -> content_text/sections/tables/images."
+      notes: "Если ссылка на приложение есть в main, но блок приложения не найден, создавать placeholder с notes."
+
+  table_and_media_mapping:
+    table_detection:
+      - "Объект считать таблицей, если есть >=2 строк и >=2 колонок или явная подпись 'Таблица N'."
+      - "Строку с повторяющимися разделителями (| ; tab) считать псевдотаблицей."
+      - "Для merged-cell структур сохранять исходный текст ячеек и позиционные метки в table_row.notes."
+    table_target_rules:
+      - "Таблица в блоке 'Отчетные документы' приоритетно маппится в reporting_documents."
+      - "Таблица внутри приложения приоритетно маппится в appendices[].tables."
+      - "Остальные таблицы маппить в текущий content.main[].tables."
+    image_detection:
+      - "Маркеры: 'Рисунок', 'Схема', 'Блок-схема', 'Figure', встроенный объект изображения."
+      - "Подпись вида 'Рисунок N - ...' -> image.title/caption."
+    flowchart_classification:
+      - "Если подпись содержит 'блок-схема', 'алгоритм', 'workflow', сохранять как image и дублировать ссылку в content.document_flow_diagrams."
+      - "Если схема находится в приложении, первичный target: appendices[].images; secondary_reference: content.document_flow_diagrams."
+    ocr_fallback:
+      - "При наличии alt_text/OCR-текста сохранять в image.alt_text."
+      - "При отсутствии OCR не выполнять semantic extraction из изображения, только метаданные."
+
+  formatting_rules:
+    - "Как определять уровень заголовка (Heading 1, Heading 2 и т.д.): по нумерации, стилю, длине строки и контекстным интервалам."
+    - "Как отличать обычный текст от таблиц и изображений: по структуре сетки, повторяемости колонок, объектным маркерам и подписям."
+    - "Как обрабатывать блок-схемы и графические схемы: классифицировать как image, сохранять подпись, при process-like содержимом добавлять в document_flow_diagrams."
+    - "Нумерованные/маркированные списки сохранять и в сплошной текст раздела, и в bullet_points для машинной обработки."
+    - "Служебные листы ('Лист регистрации изменений', 'Лист ознакомления', 'Лист согласования') не включать в content.main, а сохранять в notes/extra_attributes при необходимости."
+
+  ambiguity_resolution:
+    thresholds:
+      high_confidence: 0.85
+      medium_confidence: 0.65
+      low_confidence: 0.40
+    tie_break_order:
+      - "explicit_heading_match"
+      - "required_section_priority"
+      - "position_in_document"
+      - "schema_compatibility"
+      - "semantic_similarity"
+    gray_zone_rules:
+      - case: "Заголовок 'Порядок' без явного контекста"
+        decision: "Если текст содержит глаголы процесса (оформляет/передает/утверждает/контролирует), target=content.main."
+      - case: "Табличный блок между основной частью и приложениями"
+        decision: "Если есть ссылка 'форма/бланк/приложение', target=appendices; иначе target=content.main.tables."
+      - case: "Роли встречаются в разных разделах"
+        decision: "Сводить итоговые роли в responsibility.entries, сохраняя источник каждого пункта в notes."
+      - case: "Неявная 'Область применения'"
+        decision: "Искать формулы 'Настоящий стандарт устанавливает/распространяется'; найденный абзац маппить в content.area."
+    orphan_content_policy:
+      - "Если блок не классифицирован и confidence < 0.40, поместить в ближайший раздел content.main[].notes."
+      - "Если блок находится до первого предметного раздела, поместить в meta.extra_attributes.unclassified_preface."
+    conflict_logging:
+      - "Логировать каждый override target с полями: previous_target, final_target, rule_id, confidence_delta."
+
+  special_cases:
+    - description: "Как обрабатывать черновики с неявной структурой"
+      handling:
+        - "Выполнить segmentation по абзацам и тематическим сменам."
+        - "Построить временные кластеры: area/normative/terms/main/responsibility/reporting/appendices."
+        - "Назначить synthetic headings для кластеров и только затем строить дерево content.main."
+    - description: "Как работать с документами, где много таблиц"
+      handling:
+        - "Сначала классифицировать таблицы по назначению (отчетность, форма приложения, операционная таблица раздела)."
+        - "Если таблица содержит колонки ответственности, дополнительно извлекать candidate roles для responsibility."
+        - "При неоднозначности приоритет: reporting_documents > appendices.tables > content.main.tables."
+    - description: "Как определять 'Введен впервые' или 'Взамен ...'"
+      handling:
+        - "Искать оба маркера во всем документе, включая титул и колонтитулы."
+        - "Если найден только 'Введен впервые' -> first_introduced=true, replaces=null."
+        - "Если найден только 'Взамен СТО ...' -> first_introduced=false, replaces=<код>."
+        - "Если найдены оба, использовать ближайший к блоку утверждения и записывать второй в notes как конфликт."
+
+  draft_profiles:
+    - profile_name: "Регламент заявки техники"
+      cues:
+        - "Заявка"
+        - "Согласование заявки"
+        - "Срок исполнения"
+        - "Диспетчер/механик/инициатор"
+      mapping_focus:
+        - "Процедурные шаги -> content.main с глубокой вложенностью."
+        - "Роли исполнителей -> responsibility.entries."
+        - "Формы заявки -> appendices."
+      frequent_confusions:
+        - "Блок 'Порядок подачи заявки' ошибочно попадает в area."
+        - "Таблицы статусов заявки ошибочно попадают в reporting_documents."
+    - profile_name: "Материально-технические отчеты"
+      cues:
+        - "Отчет"
+        - "Ведомость"
+        - "Учет ТМЦ"
+        - "Склад"
+        - "Срок хранения"
+      mapping_focus:
+        - "Таблицы учета и отчетности -> reporting_documents."
+        - "Нормы и правила ведения учета -> content.main."
+        - "Формы актов/ведомостей -> appendices."
+      frequent_confusions:
+        - "Операционные таблицы процесса ошибочно трактуются как формы приложения."
+        - "Описание периодичности отчетности теряется без явной колонки."
+    - profile_name: "Управление персоналом"
+      cues:
+        - "Подбор"
+        - "Адаптация"
+        - "Обучение"
+        - "Оценка персонала"
+        - "Руководитель подразделения"
+      mapping_focus:
+        - "Политики и процедуры HR -> content.main."
+        - "Зоны ответственности HR/руководителей -> responsibility.entries."
+        - "Оценочные листы и анкеты -> appendices."
+      frequent_confusions:
+        - "Разделы 'Общие положения' с ролями частично дублируют responsibility."
+        - "Чек-листы адаптации распознаются как reporting_documents вместо appendices."
+
+  implementation_contract:
+    parser_requirements:
+      - "Выдавать блоки с метаданными: page, block_type, heading_level, raw_text, table_cells, image_ref."
+      - "Гарантировать стабильный block_id для трассировки решений маппера."
+    semantic_mapper_requirements:
+      - "Поддерживать multi-candidate scoring и объяснимый выбор final target."
+      - "Применять post-processing reconciliation для обязательных разделов схемы."
+      - "Возвращать список warnings/errors по неуверенным и конфликтным переносам."
+    quality_gates:
+      - "Покрыты все required-paths схемы."
+      - "Найдены обязательные разделы: область применения, нормативные ссылки, термины, основная часть."
+      - "Сформированы responsibility, reporting_documents и appendices либо placeholders с причинами отсутствия."

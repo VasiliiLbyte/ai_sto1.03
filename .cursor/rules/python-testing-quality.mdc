@@ -1,0 +1,12 @@
+---
+description: Always-on Python testing and quality practices.
+alwaysApply: true
+---
+
+# Python Testing And Quality
+
+- Write pytest tests for all new behavior.
+- Cover happy paths, edge cases, and failure scenarios.
+- Keep tests deterministic and avoid flaky timing/network dependencies.
+- Update tests together with behavior changes.
+- Keep test setup minimal and reusable with fixtures.

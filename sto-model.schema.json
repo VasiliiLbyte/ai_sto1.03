@@ -1,0 +1,895 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://snark.local/schemas/sto-model.schema.json",
+  "title": "STOFabric STO Document Model",
+  "description": "Универсальная JSON Schema для представления стандартов организации (СТО) по каркасу СТО 31025229-001-2024 и типовым структурам СТО 002/003/004/005/007/010/012. Схема рассчитана на строгую валидацию ключевых частей документа с контролируемыми точками расширения для будущих черновиков.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "meta",
+    "content",
+    "reporting_documents",
+    "responsibility",
+    "appendices"
+  ],
+  "properties": {
+    "meta": {
+      "$ref": "#/$defs/meta"
+    },
+    "content": {
+      "$ref": "#/$defs/content"
+    },
+    "reporting_documents": {
+      "$ref": "#/$defs/reporting_documents"
+    },
+    "responsibility": {
+      "$ref": "#/$defs/responsibility_block"
+    },
+    "appendices": {
+      "type": "array",
+      "description": "Массив приложений документа СТО. Каждый элемент фиксирует идентификатор приложения, его название, статус (обязательное/рекомендуемое/справочное) и содержимое.",
+      "items": {
+        "$ref": "#/$defs/appendix"
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Непустая текстовая строка."
+    },
+    "date_or_text": {
+      "description": "Дата в машиночитаемом (YYYY-MM-DD) или исходном текстовом виде, если документ еще в черновом формате с шаблонными подстановками.",
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date",
+          "description": "Дата в формате ISO 8601 (YYYY-MM-DD)."
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Текстовая дата/плейсхолдер в исходном формате документа (например, «___» или «20.04.2026»)."
+        }
+      ]
+    },
+    "sto_number": {
+      "type": "string",
+      "description": "Обозначение СТО. Допускаются варианты с префиксом «СТО», дефисом или длинным тире.",
+      "pattern": "^(СТО\\s*)?31025229[-–]\\d{3}[-–]\\d{4}$"
+    },
+    "document_status": {
+      "type": "string",
+      "description": "Статус жизненного цикла документа.",
+      "enum": [
+        "draft",
+        "in_review",
+        "approved",
+        "active",
+        "obsolete",
+        "cancelled",
+        "archived"
+      ]
+    },
+    "section_number": {
+      "type": "string",
+      "description": "Номер раздела/подраздела в иерархии СТО (например, «4», «4.1», «7.3.2»).",
+      "pattern": "^\\d+(?:\\.\\d+)*$"
+    },
+    "organization_info": {
+      "type": "object",
+      "description": "Сведения об организации-владельце стандарта.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Полное официальное наименование организации."
+        },
+        "short_name": {
+          "type": "string",
+          "description": "Краткое наименование организации."
+        },
+        "legal_form": {
+          "type": "string",
+          "description": "Организационно-правовая форма (например, ООО)."
+        },
+        "department": {
+          "type": "string",
+          "description": "Подразделение-инициатор/владелец конкретного СТО."
+        },
+        "extra_attributes": {
+          "type": "object",
+          "description": "Дополнительные атрибуты организации для нестандартных сценариев.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "approval_info": {
+      "type": "object",
+      "description": "Реквизиты утверждения и ввода документа в действие.",
+      "additionalProperties": false,
+      "required": [
+        "approval_date"
+      ],
+      "properties": {
+        "approver_position": {
+          "type": "string",
+          "description": "Должность утверждающего лица (например, «Генеральный директор»)."
+        },
+        "approver_name": {
+          "type": "string",
+          "description": "ФИО утверждающего лица."
+        },
+        "approval_date": {
+          "$ref": "#/$defs/date_or_text"
+        },
+        "order_number": {
+          "type": "string",
+          "description": "Номер приказа о введении документа в действие."
+        },
+        "order_date": {
+          "$ref": "#/$defs/date_or_text",
+          "description": "Дата приказа о введении стандарта в действие."
+        },
+        "introduced_instead_of": {
+          "type": "string",
+          "description": "Обозначение ранее действовавшего СТО, вводимого взамен (например, «СТО 31025229-010-2024»). Если документ вводится впервые, поле можно оставить пустым."
+        },
+        "effective_date": {
+          "$ref": "#/$defs/date_or_text"
+        },
+        "first_introduced": {
+          "type": "boolean",
+          "description": "Признак «Введен впервые»."
+        },
+        "extra_attributes": {
+          "type": "object",
+          "description": "Расширяемые реквизиты утверждения для нестандартных процессов согласования.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Метаданные документа СТО.",
+      "additionalProperties": false,
+      "required": [
+        "sto_number",
+        "title",
+        "version",
+        "approval_date",
+        "status"
+      ],
+      "properties": {
+        "sto_number": {
+          "$ref": "#/$defs/sto_number"
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Полное наименование стандарта организации."
+        },
+        "short_title": {
+          "type": "string",
+          "description": "Краткий заголовок для индексов/сводных таблиц."
+        },
+        "version": {
+          "type": "string",
+          "description": "Версия документа, ревизия или номер редакции (например, «1.0», «Ред.2», «Изм.3»)."
+        },
+        "status": {
+          "$ref": "#/$defs/document_status"
+        },
+        "approval_date": {
+          "$ref": "#/$defs/date_or_text"
+        },
+        "effective_date": {
+          "$ref": "#/$defs/date_or_text",
+          "description": "Дата начала действия стандарта."
+        },
+        "review_date": {
+          "$ref": "#/$defs/date_or_text",
+          "description": "Плановая дата пересмотра документа."
+        },
+        "standard_series": {
+          "type": "string",
+          "description": "Серия/группа стандартов (например, «Система менеджмента качества»)."
+        },
+        "organization": {
+          "$ref": "#/$defs/organization_info"
+        },
+        "approval": {
+          "$ref": "#/$defs/approval_info"
+        },
+        "developers": {
+          "type": "array",
+          "description": "Перечень разработчиков документа.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/non_empty_string",
+                "description": "ФИО разработчика."
+              },
+              "position": {
+                "type": "string",
+                "description": "Должность разработчика."
+              },
+              "department": {
+                "type": "string",
+                "description": "Подразделение разработчика."
+              }
+            }
+          }
+        },
+        "scope_note": {
+          "type": "string",
+          "description": "Краткое текстовое пояснение по области действия документа."
+        },
+        "source_document": {
+          "type": "string",
+          "description": "Исходный файл/источник данных (например, путь к docx)."
+        },
+        "keywords": {
+          "type": "array",
+          "description": "Ключевые слова для поиска по стандартам.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "replaces": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Обозначение стандарта, который заменяется (для строки «Взамен СТО 31025229-XXX-2024»). Если документ вводится впервые — оставлять пустым или null."
+        },
+        "extra_attributes": {
+          "type": "object",
+          "description": "Контролируемая точка расширения для будущих метаданных без изменения базового контракта.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "normative_reference": {
+      "type": "object",
+      "description": "Элемент списка нормативных ссылок.",
+      "additionalProperties": false,
+      "required": [
+        "reference_id",
+        "title"
+      ],
+      "properties": {
+        "reference_id": {
+          "type": "string",
+          "description": "Краткое обозначение документа (например, ГОСТ/СТО/Приказ с номером)."
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Полное наименование ссылочного документа."
+        },
+        "issuer": {
+          "type": "string",
+          "description": "Орган, утвердивший документ."
+        },
+        "year": {
+          "type": "integer",
+          "description": "Год издания/утверждения ссылочного документа."
+        },
+        "status": {
+          "type": "string",
+          "description": "Статус ссылочного документа (действует, заменен и т.д.)."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Публичная ссылка на источник документа, если доступна."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Дополнительные примечания по применимости ссылки."
+        }
+      }
+    },
+    "term_entry": {
+      "type": "object",
+      "description": "Термин и его определение.",
+      "additionalProperties": false,
+      "required": [
+        "term",
+        "definition"
+      ],
+      "properties": {
+        "term": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Термин."
+        },
+        "definition": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Определение термина."
+        },
+        "source": {
+          "type": "string",
+          "description": "Источник термина (если определение заимствовано)."
+        },
+        "section_number": {
+          "$ref": "#/$defs/section_number",
+          "description": "Номер пункта, в котором размещен термин."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Дополнительные пояснения по использованию термина."
+        }
+      }
+    },
+    "abbreviation_entry": {
+      "type": "object",
+      "description": "Сокращение и его расшифровка.",
+      "additionalProperties": false,
+      "required": [
+        "abbr",
+        "definition"
+      ],
+      "properties": {
+        "abbr": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Сокращение."
+        },
+        "definition": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Расшифровка сокращения."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Примечания по контексту применения сокращения."
+        }
+      }
+    },
+    "table_column": {
+      "type": "object",
+      "description": "Описание колонки таблицы.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Заголовок колонки."
+        },
+        "key": {
+          "type": "string",
+          "description": "Стабильный ключ колонки для программной обработки."
+        },
+        "description": {
+          "type": "string",
+          "description": "Описание назначения колонки."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Признак обязательности заполнения колонки."
+        }
+      }
+    },
+    "table_cell": {
+      "description": "Ячейка таблицы. Допускается скалярный тип или вложенный объект для сложного содержимого.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "description": "Расширенная структура ячейки (например, текст + формат + ссылка).",
+          "additionalProperties": true
+        }
+      ]
+    },
+    "table_row": {
+      "type": "object",
+      "description": "Одна строка таблицы с ячейками в том же порядке, что и колонки.",
+      "additionalProperties": false,
+      "required": [
+        "cells"
+      ],
+      "properties": {
+        "row_id": {
+          "type": "string",
+          "description": "Уникальный идентификатор строки."
+        },
+        "cells": {
+          "type": "array",
+          "description": "Значения ячеек строки.",
+          "items": {
+            "$ref": "#/$defs/table_cell"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "description": "Комментарии к строке."
+        }
+      }
+    },
+    "table": {
+      "type": "object",
+      "description": "Таблица, используемая в основном тексте, приложениях или отчетных блоках.",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "rows"
+      ],
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "description": "Идентификатор таблицы (например, «Таблица 1» или внутренний slug)."
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Название таблицы."
+        },
+        "description": {
+          "type": "string",
+          "description": "Пояснение к содержанию таблицы."
+        },
+        "columns": {
+          "type": "array",
+          "description": "Метаданные колонок таблицы.",
+          "items": {
+            "$ref": "#/$defs/table_column"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "description": "Данные строк таблицы.",
+          "items": {
+            "$ref": "#/$defs/table_row"
+          }
+        },
+        "source_page": {
+          "type": "integer",
+          "description": "Номер страницы источника, где размещена таблица."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Дополнительные замечания к таблице."
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "description": "Изображение, диаграмма или блок-схема, включенная в СТО.",
+      "additionalProperties": false,
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "image_id": {
+          "type": "string",
+          "description": "Идентификатор изображения."
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Заголовок изображения."
+        },
+        "caption": {
+          "type": "string",
+          "description": "Подпись к изображению."
+        },
+        "path": {
+          "type": "string",
+          "description": "Путь к файлу изображения в файловой системе/хранилище."
+        },
+        "uri": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL изображения, если источник внешний."
+        },
+        "source_page": {
+          "type": "integer",
+          "description": "Номер страницы источника."
+        },
+        "alt_text": {
+          "type": "string",
+          "description": "Альтернативный текст для доступности."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Комментарии по использованию/интерпретации изображения."
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "description": "Раздел или подраздел основной части СТО. Поддерживается рекурсивная вложенность через поле subsections.",
+      "additionalProperties": false,
+      "required": [
+        "section_number",
+        "title",
+        "content"
+      ],
+      "properties": {
+        "section_number": {
+          "$ref": "#/$defs/section_number"
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Наименование раздела/подраздела."
+        },
+        "content": {
+          "type": "string",
+          "description": "Основной текст раздела. Допускается пустая строка, если фактическое содержимое вынесено в таблицы/подразделы."
+        },
+        "subsections": {
+          "type": "array",
+          "description": "Вложенные подразделы текущего раздела (рекурсивная структура).",
+          "items": {
+            "$ref": "#/$defs/section"
+          }
+        },
+        "tables": {
+          "type": "array",
+          "description": "Таблицы, относящиеся к текущему разделу.",
+          "items": {
+            "$ref": "#/$defs/table"
+          }
+        },
+        "images": {
+          "type": "array",
+          "description": "Изображения и схемы, относящиеся к текущему разделу.",
+          "items": {
+            "$ref": "#/$defs/image"
+          }
+        },
+        "bullet_points": {
+          "type": "array",
+          "description": "Маркированные/нумерованные пункты, если нужно хранить их отдельно от сплошного текста.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "normative_references_inline": {
+          "type": "array",
+          "description": "Ссылки на документы, упомянутые непосредственно в данном разделе.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "description": "Комментарии редактора/парсера к разделу."
+        },
+        "extra_attributes": {
+          "type": "object",
+          "description": "Точка расширения для будущих атрибутов раздела.",
+          "additionalProperties": true
+        }
+      }
+    },
+    "terms_block": {
+      "type": "object",
+      "description": "Блок «Термины, определения и сокращения».",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "abbreviations"
+      ],
+      "properties": {
+        "intro": {
+          "type": "string",
+          "description": "Вводная формулировка раздела терминов."
+        },
+        "entries": {
+          "type": "array",
+          "description": "Список терминов и определений.",
+          "items": {
+            "$ref": "#/$defs/term_entry"
+          }
+        },
+        "abbreviations": {
+          "type": "array",
+          "description": "Список сокращений и расшифровок.",
+          "items": {
+            "$ref": "#/$defs/abbreviation_entry"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "description": "Дополнительные пояснения к терминологическому блоку."
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "description": "Основное содержание СТО.",
+      "additionalProperties": false,
+      "required": [
+        "area",
+        "normative_references",
+        "terms",
+        "main"
+      ],
+      "properties": {
+        "area": {
+          "type": "string",
+          "description": "Раздел «Область применения» в текстовом виде."
+        },
+        "normative_references": {
+          "type": "array",
+          "description": "Перечень нормативных ссылок.",
+          "items": {
+            "$ref": "#/$defs/normative_reference"
+          }
+        },
+        "terms": {
+          "$ref": "#/$defs/terms_block"
+        },
+        "main": {
+          "type": "array",
+          "description": "Массив разделов основной части документа с рекурсивными подразделами, таблицами и изображениями.",
+          "items": {
+            "$ref": "#/$defs/section"
+          }
+        },
+        "document_flow_diagrams": {
+          "type": "array",
+          "description": "Схемы/блок-схемы процесса, если выделяются как отдельный слой контента.",
+          "items": {
+            "$ref": "#/$defs/image"
+          }
+        },
+        "extra_attributes": {
+          "type": "object",
+          "description": "Расширяемый контейнер для будущих элементов содержания (без нарушения корневой структуры).",
+          "additionalProperties": true
+        }
+      }
+    },
+    "reporting_document_row": {
+      "type": "object",
+      "description": "Одна запись таблицы «Отчетные документы».",
+      "additionalProperties": true,
+      "required": [
+        "document_name",
+        "responsible_role",
+        "storage_location",
+        "retention_period"
+      ],
+      "properties": {
+        "document_name": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Наименование отчетного документа."
+        },
+        "form_code": {
+          "type": "string",
+          "description": "Код/форма документа (если предусмотрено)."
+        },
+        "responsible_role": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Должность/роль, ответственная за ведение документа."
+        },
+        "recipient_role": {
+          "type": "string",
+          "description": "Должность/роль получателя отчетного документа."
+        },
+        "submission_frequency": {
+          "type": "string",
+          "description": "Периодичность формирования/передачи документа."
+        },
+        "storage_location": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Место хранения документа."
+        },
+        "retention_period": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Срок хранения документа."
+        },
+        "format": {
+          "type": "string",
+          "description": "Формат документа (бумажный, электронный, смешанный)."
+        },
+        "is_mandatory": {
+          "type": "boolean",
+          "description": "Обязателен ли данный отчетный документ."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Примечания по заполнению/хранению/передаче."
+        }
+      }
+    },
+    "reporting_documents": {
+      "type": "array",
+      "description": "Раздел «Отчетные документы» в виде массива строк таблицы. Каждый элемент массива соответствует одной строке таблицы «Отчетные документы».",
+      "items": {
+        "$ref": "#/$defs/reporting_document_row"
+      }
+    },
+    "responsibility_entry": {
+      "type": "object",
+      "description": "Одна роль/должность и закрепленная зона ответственности.",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "responsibilities"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Роль или должность."
+        },
+        "responsibilities": {
+          "type": "array",
+          "description": "Список обязанностей/ответственностей роли.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "authority": {
+          "type": "array",
+          "description": "Список полномочий роли.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "applicability": {
+          "type": "string",
+          "description": "Условия применимости этой ответственности (подразделение, этап, тип работ)."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Примечания по роли."
+        }
+      }
+    },
+    "responsibility_block": {
+      "type": "object",
+      "description": "Раздел «Ответственность».",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "entries"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "const": "Ответственность",
+          "description": "Фиксированное название раздела."
+        },
+        "general_provisions": {
+          "type": "string",
+          "description": "Общие положения раздела ответственности."
+        },
+        "entries": {
+          "type": "array",
+          "description": "Роли/должности и их ответственность.",
+          "items": {
+            "$ref": "#/$defs/responsibility_entry"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "description": "Дополнительные пояснения к разделу."
+        }
+      }
+    },
+    "appendix_status": {
+      "type": "string",
+      "description": "Статус приложения по классификации СТО.",
+      "enum": [
+        "обязательное",
+        "рекомендуемое",
+        "справочное"
+      ]
+    },
+    "appendix": {
+      "type": "object",
+      "description": "Приложение к СТО.",
+      "additionalProperties": false,
+      "required": [
+        "appendix_id",
+        "title",
+        "status"
+      ],
+      "properties": {
+        "appendix_id": {
+          "type": "string",
+          "description": "Идентификатор приложения (например, «А», «Б», «В»).",
+          "pattern": "^[A-Za-zА-Яа-яЁё]{1,3}$"
+        },
+        "title": {
+          "$ref": "#/$defs/non_empty_string",
+          "description": "Название приложения."
+        },
+        "status": {
+          "$ref": "#/$defs/appendix_status"
+        },
+        "description": {
+          "type": "string",
+          "description": "Краткое пояснение назначения приложения."
+        },
+        "content_text": {
+          "type": "string",
+          "description": "Текстовое содержимое приложения."
+        },
+        "sections": {
+          "type": "array",
+          "description": "Разделы приложения (если внутри есть собственная структура).",
+          "items": {
+            "$ref": "#/$defs/section"
+          }
+        },
+        "tables": {
+          "type": "array",
+          "description": "Таблицы в приложении.",
+          "items": {
+            "$ref": "#/$defs/table"
+          }
+        },
+        "images": {
+          "type": "array",
+          "description": "Изображения/схемы в приложении.",
+          "items": {
+            "$ref": "#/$defs/image"
+          }
+        },
+        "related_forms": {
+          "type": "array",
+          "description": "Связанные формы/шаблоны, которые обычно публикуются в приложениях.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/non_empty_string",
+                "description": "Название формы."
+              },
+              "code": {
+                "type": "string",
+                "description": "Код формы."
+              },
+              "file_reference": {
+                "type": "string",
+                "description": "Ссылка/путь на внешний файл формы."
+              },
+              "notes": {
+                "type": "string",
+                "description": "Пояснение по использованию формы."
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "string",
+          "description": "Примечания к приложению."
+        },
+        "extra_attributes": {
+          "type": "object",
+          "description": "Точка расширения для специфики будущих приложений.",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

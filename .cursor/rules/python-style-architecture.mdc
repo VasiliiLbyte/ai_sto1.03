@@ -1,0 +1,13 @@
+---
+description: Always-on Python style and architecture standards.
+alwaysApply: true
+---
+
+# Python Style And Architecture
+
+- Use Python 3.11+ features when practical.
+- Add type hints on public APIs and keep interfaces explicit.
+- Keep modules small and focused; apply single-responsibility design.
+- Enforce formatting and linting with Ruff (`format` and `check`).
+- Prefer readable code over clever one-liners.
+- Add concise docstrings for public classes and functions.

@@ -1,0 +1,12 @@
+---
+description: Always-on Python runtime, logging, configuration, and dependency rules.
+alwaysApply: true
+---
+
+# Python Runtime And Operations
+
+- Handle exceptions explicitly and never swallow errors silently.
+- Log failures with actionable context for debugging.
+- Use environment variables for configuration; never hardcode secrets.
+- Validate required configuration early at startup.
+- Manage dependencies with a lockfile (uv/poetry/pip-tools) and keep them minimal.
