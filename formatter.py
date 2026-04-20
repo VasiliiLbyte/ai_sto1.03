@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
-from docx.enum.section import WD_SECTION, WD_SECTION_START
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -26,6 +25,8 @@ class Formatter:
         self.sto_document = transformed_payload.get("sto_document_json", transformed_payload)
         self.warnings: list[str] = []
         self.doc = Document()
+        self.table_counter = 0
+        self.figure_counter = 0
         self._configure_document_defaults()
 
     @staticmethod
@@ -76,22 +77,34 @@ class Formatter:
 
     def build_title_page(self) -> None:
         meta = self.sto_document.get("meta", {})
+        approval = meta.get("approval", {})
         org_name = meta.get("organization", {}).get("name", "ООО «ПКФ «СНАРК»")
         self.doc.add_paragraph(org_name).alignment = WD_ALIGN_PARAGRAPH.CENTER
         self.doc.add_paragraph("СТАНДАРТ ОРГАНИЗАЦИИ").alignment = WD_ALIGN_PARAGRAPH.CENTER
         self.doc.add_paragraph(meta.get("sto_number", "СТО 31025229-000-2024")).alignment = WD_ALIGN_PARAGRAPH.CENTER
-        title_p = self.doc.add_paragraph(meta.get("title", "Стандарт организации"))
+        title_p = self.doc.add_paragraph(meta.get("title", "Стандарт организации"), style="Title")
         title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         title_p.runs[0].bold = True
         self.doc.add_paragraph()
         self.doc.add_paragraph("УТВЕРЖДАЮ")
-        self.doc.add_paragraph(meta.get("approval", {}).get("approver_position", "Генеральный директор"))
-        self.doc.add_paragraph(meta.get("approval", {}).get("approver_name", ""))
-        self.doc.add_paragraph(str(meta.get("approval_date", "")))
+        self.doc.add_paragraph(approval.get("approver_position", "Генеральный директор"))
+        self.doc.add_paragraph(approval.get("approver_name", ""))
+        self.doc.add_paragraph(str(approval.get("approval_date", meta.get("approval_date", ""))))
         self.doc.add_page_break()
 
+    def _collect_main_toc_entries(self, sections: list[dict[str, Any]]) -> list[str]:
+        entries: list[str] = []
+        for section in sections:
+            number = section.get("section_number", "").strip()
+            title = section.get("title", "").strip()
+            line = f"{number} {title}".strip()
+            if line:
+                entries.append(line)
+            entries.extend(self._collect_main_toc_entries(section.get("subsections", [])))
+        return entries
+
     def build_toc(self) -> None:
-        self.doc.add_paragraph("Содержание").runs[0].bold = True
+        self.doc.add_paragraph("Содержание", style="Heading 1").runs[0].bold = True
         toc_items = [
             "1 Область применения",
             "2 Нормативные ссылки",
@@ -100,6 +113,7 @@ class Formatter:
             "5 Отчетные документы",
             "6 Ответственность",
         ]
+        toc_items.extend(self._collect_main_toc_entries(self.sto_document.get("content", {}).get("main", [])))
         if self.sto_document.get("appendices"):
             toc_items.append("Приложения")
         toc_items.extend(["Лист регистрации изменений", "Лист ознакомления", "Лист согласования"])
@@ -107,16 +121,22 @@ class Formatter:
             self.doc.add_paragraph(item)
         self.doc.add_page_break()
 
-    def _add_section_heading(self, title: str) -> None:
-        p = self.doc.add_paragraph(title)
+    def _add_section_heading(self, title: str, level: int = 1) -> None:
+        style_name = "Heading 1"
+        if level == 2:
+            style_name = "Heading 2"
+        elif level >= 3:
+            style_name = "Heading 3"
+        p = self.doc.add_paragraph(title, style=style_name)
         if p.runs:
             p.runs[0].bold = True
         p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     def _write_tables(self, tables: list[dict[str, Any]]) -> None:
-        for t_idx, table in enumerate(tables, start=1):
-            title = table.get("title", f"Таблица {t_idx}")
-            self.doc.add_paragraph(f"Таблица {t_idx} - {title}")
+        for table in tables:
+            self.table_counter += 1
+            title = table.get("title", f"Таблица {self.table_counter}")
+            self.doc.add_paragraph(f"Таблица {self.table_counter} — {title}")
             rows = table.get("rows", [])
             if not rows:
                 continue
@@ -129,29 +149,42 @@ class Formatter:
                     doc_table.cell(r_idx, c_idx).text = str(cells[c_idx]) if c_idx < len(cells) else ""
             self.doc.add_paragraph()
 
+    def _extract_image_path(self, image: dict[str, Any]) -> str | None:
+        if image.get("path"):
+            return str(image["path"])
+        image_ref = image.get("image_ref")
+        if isinstance(image_ref, list):
+            for item in image_ref:
+                if isinstance(item, dict) and item.get("path"):
+                    return str(item["path"])
+        return None
+
     def _write_images(self, images: list[dict[str, Any]]) -> None:
-        for idx, image in enumerate(images, start=1):
-            caption = image.get("caption") or image.get("title") or f"Рисунок {idx}"
-            self.doc.add_paragraph(f"Рисунок {idx} - {caption}")
-            path = image.get("path")
+        for image in images:
+            self.figure_counter += 1
+            caption = image.get("caption") or image.get("title") or f"Рисунок {self.figure_counter}"
+            self.doc.add_paragraph(f"Рисунок {self.figure_counter} — {caption}")
+            path = self._extract_image_path(image)
             if path:
                 try:
                     self.doc.add_picture(path)
+                    continue
                 except Exception:
                     self.warnings.append(f"Image file is unavailable: {path}")
+            self.doc.add_paragraph("[Изображение отсутствует в источнике]")
 
     def build_mandatory_sections(self) -> None:
         content = self.sto_document.get("content", {})
-        self._add_section_heading("1 Область применения")
+        self._add_section_heading("1 Область применения", level=1)
         self.doc.add_paragraph(content.get("area", ""))
 
-        self._add_section_heading("2 Нормативные ссылки")
+        self._add_section_heading("2 Нормативные ссылки", level=1)
         refs = content.get("normative_references", [])
         if refs:
             for ref in refs:
-                self.doc.add_paragraph(f"{ref.get('reference_id', '')} - {ref.get('title', '')}")
+                self.doc.add_paragraph(f"{ref.get('reference_id', '')} — {ref.get('title', '')}")
 
-        self._add_section_heading("3 Термины, определения и сокращения")
+        self._add_section_heading("3 Термины, определения и сокращения", level=1)
         terms = content.get("terms", {})
         if terms.get("intro"):
             self.doc.add_paragraph(terms["intro"])
@@ -160,24 +193,24 @@ class Formatter:
         for ab in terms.get("abbreviations", []):
             self.doc.add_paragraph(f"{ab.get('abbr', '')} - {ab.get('definition', '')}")
 
-    def _build_main_sections_recursive(self, sections: list[dict[str, Any]]) -> None:
+    def _build_main_sections_recursive(self, sections: list[dict[str, Any]], level: int = 2) -> None:
         for section in sections:
             title = f"{section.get('section_number', '')} {section.get('title', '')}".strip()
-            self._add_section_heading(title)
+            self._add_section_heading(title, level=level)
             if section.get("content"):
                 self.doc.add_paragraph(section["content"])
             for point in section.get("bullet_points", []):
                 self.doc.add_paragraph(f"• {point}")
             self._write_tables(section.get("tables", []))
             self._write_images(section.get("images", []))
-            self._build_main_sections_recursive(section.get("subsections", []))
+            self._build_main_sections_recursive(section.get("subsections", []), level=min(level + 1, 3))
 
     def build_main_sections(self) -> None:
-        self._add_section_heading("4 Основная часть")
-        self._build_main_sections_recursive(self.sto_document.get("content", {}).get("main", []))
+        self._add_section_heading("4 Основная часть", level=1)
+        self._build_main_sections_recursive(self.sto_document.get("content", {}).get("main", []), level=2)
 
     def build_reporting_responsibility_appendices(self) -> None:
-        self._add_section_heading("5 Отчетные документы")
+        self._add_section_heading("5 Отчетные документы", level=1)
         for row in self.sto_document.get("reporting_documents", []):
             self.doc.add_paragraph(
                 " | ".join(
@@ -190,7 +223,7 @@ class Formatter:
                 )
             )
 
-        self._add_section_heading("6 Ответственность")
+        self._add_section_heading("6 Ответственность", level=1)
         resp = self.sto_document.get("responsibility", {}).get("entries", [])
         for entry in resp:
             self.doc.add_paragraph(entry.get("role", ""))
@@ -200,7 +233,7 @@ class Formatter:
         for appendix in self.sto_document.get("appendices", []):
             self.doc.add_page_break()
             app_header = f"Приложение {appendix.get('appendix_id', '')} ({appendix.get('status', 'справочное')})"
-            self._add_section_heading(app_header)
+            self._add_section_heading(app_header, level=1)
             self.doc.add_paragraph(appendix.get("title", ""))
             if appendix.get("content_text"):
                 self.doc.add_paragraph(appendix["content_text"])
@@ -210,25 +243,36 @@ class Formatter:
     def build_service_sheets(self) -> None:
         sheets = self.sto_document.get("meta", {}).get("extra_attributes", {}).get("service_sheets", {})
         self.doc.add_page_break()
-        self._add_section_heading("Лист регистрации изменений")
-        self._render_service_sheet_table(sheets.get("change_log", []), ["номер изменения", "дата", "подпись"])
+        self._add_section_heading("Лист регистрации изменений", level=1)
+        self._render_service_sheet_table(
+            sheets.get("change_log", []),
+            ["Номер изменения", "Номер извещения", "Дата", "Подпись"],
+        )
 
         self.doc.add_page_break()
-        self._add_section_heading("Лист ознакомления")
-        self._render_service_sheet_table(sheets.get("acquaintance", []), ["ФИО", "должность", "подпись", "дата"])
+        self._add_section_heading("Лист ознакомления", level=1)
+        self._render_service_sheet_table(
+            sheets.get("acquaintance", []),
+            ["№", "ФИО", "Должность", "Подпись", "Дата"],
+        )
 
         self.doc.add_page_break()
-        self._add_section_heading("Лист согласования")
-        self._render_service_sheet_table(sheets.get("approval", []), ["должность", "ФИО", "подпись", "дата"])
+        self._add_section_heading("Лист согласования", level=1)
+        self._render_service_sheet_table(
+            sheets.get("approval", []),
+            ["Должность", "ФИО", "Подпись", "Дата"],
+        )
 
     def _render_service_sheet_table(self, items: list[dict[str, Any]], columns: list[str]) -> None:
         table = self.doc.add_table(rows=1, cols=len(columns))
         table.style = "Table Grid"
         for idx, col in enumerate(columns):
             table.cell(0, idx).text = col
-        for item in items:
+            table.cell(0, idx).paragraphs[0].runs[0].bold = True
+        rows_to_render = items if items else [{} for _ in range(5)]
+        for item in rows_to_render:
             row = table.add_row().cells
-            values = [str(item.get(col, "")) for col in columns]
+            values = [str(item.get(col, item.get(col.lower(), ""))) for col in columns]
             for idx, value in enumerate(values):
                 row[idx].text = value
 
