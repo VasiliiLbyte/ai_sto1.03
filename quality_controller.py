@@ -41,8 +41,10 @@ class CheckResult:
     description: str
     severity: str
     required: bool
-    mode: str  # AUTO or MANUAL
-    status: str  # pass|fail|warn|manual
+    mode: str  # AUTO|MANUAL|HYBRID
+    auto_status: str  # pass|fail|warn|not_evaluated
+    manual_status: str  # required|not_required
+    final_status: str  # pass|fail|warn|manual
     evidence: str
 
 
@@ -86,15 +88,17 @@ class QualityController:
             if not path.exists():
                 raise FileNotFoundError(f"{label} not found: {path}")
 
-    def discover_drafts(self, drafts_dir: Path = DEFAULT_DRAFTS_DIR) -> list[Path]:
+    def discover_drafts(self, drafts_dir: Path = DEFAULT_DRAFTS_DIR) -> tuple[list[Path], list[Path]]:
         drafts: list[Path] = []
+        missing: list[Path] = []
         for name in DEFAULT_DRAFTS:
             path = drafts_dir / name
             if path.exists():
                 drafts.append(path)
             else:
+                missing.append(path)
                 self._log(f"[WARN] Draft not found: {path}")
-        return drafts
+        return drafts, missing
 
     @staticmethod
     def _safe_name(path: Path) -> str:
@@ -125,26 +129,17 @@ class QualityController:
         pipeline = STOFabricPipeline(ctx)
         return pipeline.run()
 
-    def _pipeline_check_result(self, item: dict[str, Any], pipeline_result: dict[str, Any], section_name: str) -> CheckResult:
-        check_expr = item.get("check", "")
-        mode = "AUTO" if "AUTO" in check_expr else "MANUAL"
-        check_id = item.get("id", "UNKNOWN")
-        description = item.get("description", "")
-        severity = item.get("severity", "info")
-        required = bool(item.get("required", False))
+    @staticmethod
+    def _parse_mode(check_expr: str) -> str:
+        has_auto = "AUTO:" in check_expr
+        has_manual = "MANUAL:" in check_expr
+        if has_auto and has_manual:
+            return "HYBRID"
+        if has_auto:
+            return "AUTO"
+        return "MANUAL"
 
-        if mode == "MANUAL":
-            return CheckResult(
-                check_id=check_id,
-                section_name=section_name,
-                description=description,
-                severity=severity,
-                required=required,
-                mode=mode,
-                status="manual",
-                evidence="Manual validation required by checklist",
-            )
-
+    def _evaluate_auto_status(self, check_id: str, pipeline_result: dict[str, Any]) -> tuple[str, str]:
         # AUTO heuristics (v1)
         warnings = pipeline_result.get("warnings", [])
         errors = pipeline_result.get("errors", [])
@@ -190,6 +185,47 @@ class QualityController:
         if status == "pass" and any(check_id in w for w in warnings):
             status = "warn"
             evidence = "Related warning found in pipeline warnings"
+        return status, evidence
+
+    def _pipeline_check_result(self, item: dict[str, Any], pipeline_result: dict[str, Any], section_name: str) -> CheckResult:
+        check_expr = item.get("check", "")
+        mode = self._parse_mode(check_expr)
+        check_id = item.get("id", "UNKNOWN")
+        description = item.get("description", "")
+        severity = item.get("severity", "info")
+        required = bool(item.get("required", False))
+
+        auto_status = "not_evaluated"
+        evidence = "Manual validation required by checklist"
+        if mode in {"AUTO", "HYBRID"}:
+            auto_status, evidence = self._evaluate_auto_status(check_id, pipeline_result)
+
+        manual_status = "required" if mode in {"MANUAL", "HYBRID"} else "not_required"
+
+        if mode == "AUTO":
+            final_status = auto_status
+        elif mode == "MANUAL":
+            final_status = "manual"
+        else:
+            # HYBRID remains manual because it still requires human validation.
+            final_status = auto_status if auto_status == "fail" else "manual"
+
+        if final_status not in {"pass", "fail", "warn", "manual"}:
+            final_status = "warn"
+
+        if mode == "MANUAL":
+            return CheckResult(
+                check_id=check_id,
+                section_name=section_name,
+                description=description,
+                severity=severity,
+                required=required,
+                mode=mode,
+                auto_status=auto_status,
+                manual_status=manual_status,
+                final_status=final_status,
+                evidence=evidence,
+            )
 
         return CheckResult(
             check_id=check_id,
@@ -198,7 +234,9 @@ class QualityController:
             severity=severity,
             required=required,
             mode=mode,
-            status=status,
+            auto_status=auto_status,
+            manual_status=manual_status,
+            final_status=final_status,
             evidence=evidence,
         )
 
@@ -214,19 +252,94 @@ class QualityController:
     def _aggregate_statuses(checks: list[CheckResult]) -> dict[str, int]:
         agg = {"pass": 0, "fail": 0, "warn": 0, "manual": 0}
         for c in checks:
-            agg[c.status] = agg.get(c.status, 0) + 1
+            agg[c.final_status] = agg.get(c.final_status, 0) + 1
         return agg
+
+    @staticmethod
+    def _calc_run_metrics(checks: list[CheckResult]) -> dict[str, Any]:
+        auto_checks = [c for c in checks if c.mode in {"AUTO", "HYBRID"}]
+        auto_evaluated = [c for c in auto_checks if c.auto_status in {"pass", "fail", "warn"}]
+        required_auto_evaluated = [c for c in auto_evaluated if c.required]
+        auto_pass = sum(1 for c in auto_evaluated if c.auto_status == "pass")
+        required_auto_pass = sum(1 for c in required_auto_evaluated if c.auto_status == "pass")
+        manual_required = sum(1 for c in checks if c.manual_status == "required")
+        required_fail_count = sum(1 for c in checks if c.required and c.final_status == "fail")
+        required_warn_count = sum(1 for c in checks if c.required and c.final_status == "warn")
+
+        auto_pass_rate = round((auto_pass / len(auto_evaluated) * 100), 1) if auto_evaluated else 0.0
+        required_auto_pass_rate = (
+            round((required_auto_pass / len(required_auto_evaluated) * 100), 1) if required_auto_evaluated else 0.0
+        )
+        return {
+            "auto_evaluated_count": len(auto_evaluated),
+            "required_auto_evaluated_count": len(required_auto_evaluated),
+            "auto_pass_rate": auto_pass_rate,
+            "required_auto_pass_rate": required_auto_pass_rate,
+            "manual_required_count": manual_required,
+            "required_fail_count": required_fail_count,
+            "required_warn_count": required_warn_count,
+        }
+
+    @staticmethod
+    def _extract_issue_lists(checks: list[CheckResult]) -> dict[str, list[dict[str, Any]]]:
+        def compact(c: CheckResult) -> dict[str, Any]:
+            return {
+                "id": c.check_id,
+                "section_name": c.section_name,
+                "severity": c.severity,
+                "required": c.required,
+                "description": c.description,
+                "evidence": c.evidence,
+                "mode": c.mode,
+            }
+
+        failed_items = [compact(c) for c in checks if c.final_status == "fail"]
+        warning_items = [compact(c) for c in checks if c.final_status == "warn"]
+        manual_items = [compact(c) for c in checks if c.manual_status == "required"]
+        return {
+            "failed_items": failed_items,
+            "warning_items": warning_items,
+            "manual_items": manual_items,
+        }
+
+    @staticmethod
+    def _artifacts_with_existence(artifacts: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in artifacts.items():
+            if isinstance(value, str) and value:
+                out[key] = {"path": value, "exists": Path(value).exists()}
+            else:
+                out[key] = {"path": value, "exists": False}
+        return out
 
     def build_json_report(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
         aggregate = {"pass": 0, "fail": 0, "warn": 0, "manual": 0}
+        aggregate_manual_required = 0
+        aggregate_required_auto_evaluated = 0
+        aggregate_required_auto_pass = 0
         for run in runs:
             for k, v in run["check_summary"].items():
                 aggregate[k] += v
+            m = run.get("compliance_metrics", {})
+            aggregate_manual_required += int(m.get("manual_required_count", 0))
+            aggregate_required_auto_evaluated += int(m.get("required_auto_evaluated_count", 0))
+            aggregate_required_auto_pass += int(
+                round((float(m.get("required_auto_pass_rate", 0.0)) / 100) * max(int(m.get("required_auto_evaluated_count", 0)), 0))
+            )
+        aggregate_required_auto_pass_rate = (
+            round((aggregate_required_auto_pass / aggregate_required_auto_evaluated) * 100, 1)
+            if aggregate_required_auto_evaluated
+            else 0.0
+        )
         return {
             "generated_at_epoch": int(time.time()),
             "runs_count": len(runs),
             "runs": runs,
             "aggregate_checks": aggregate,
+            "aggregate_metrics": {
+                "manual_required_count": aggregate_manual_required,
+                "required_auto_pass_rate": aggregate_required_auto_pass_rate,
+            },
         }
 
     def build_markdown_report(self, json_report: dict[str, Any]) -> str:
@@ -235,34 +348,50 @@ class QualityController:
         lines.append("")
         lines.append("## Aggregate Summary")
         agg = json_report.get("aggregate_checks", {})
+        am = json_report.get("aggregate_metrics", {})
+        lines.append("| pass | fail | warn | manual | required_auto_pass_rate | manual_required |")
+        lines.append("|---:|---:|---:|---:|---:|---:|")
         lines.append(
-            f"- pass: {agg.get('pass', 0)}, fail: {agg.get('fail', 0)}, "
-            f"warn: {agg.get('warn', 0)}, manual: {agg.get('manual', 0)}"
+            f"| {agg.get('pass', 0)} | {agg.get('fail', 0)} | {agg.get('warn', 0)} | {agg.get('manual', 0)} | {am.get('required_auto_pass_rate', 0.0)}% | {am.get('manual_required_count', 0)} |"
         )
         lines.append("")
 
         for run in json_report.get("runs", []):
+            metrics = run.get("compliance_metrics", {})
             lines.append(f"## Draft: `{run.get('draft_name')}`")
             lines.append(f"- pipeline_status: `{run.get('pipeline_status')}`")
-            lines.append(f"- output_docx: `{run.get('artifacts', {}).get('output_docx')}`")
+            output_artifact = run.get("artifacts", {}).get("output_docx", {})
+            lines.append(f"- output_docx: `{output_artifact.get('path')}` (exists={output_artifact.get('exists')})")
             cs = run.get("check_summary", {})
+            lines.append("| pass | fail | warn | manual | auto_pass_rate | required_auto_pass_rate |")
+            lines.append("|---:|---:|---:|---:|---:|---:|")
             lines.append(
-                f"- checks -> pass: {cs.get('pass', 0)}, fail: {cs.get('fail', 0)}, "
-                f"warn: {cs.get('warn', 0)}, manual: {cs.get('manual', 0)}"
+                f"| {cs.get('pass', 0)} | {cs.get('fail', 0)} | {cs.get('warn', 0)} | {cs.get('manual', 0)} | {metrics.get('auto_pass_rate', 0.0)}% | {metrics.get('required_auto_pass_rate', 0.0)}% |"
             )
             lines.append("")
-            lines.append("### Failed/Warning Checks")
-            for check in run.get("checks", []):
-                if check["status"] in {"fail", "warn"}:
-                    lines.append(
-                        f"- `{check['check_id']}` [{check['status']}/{check['severity']}] "
-                        f"{check['description']} — {check['evidence']}"
-                    )
+            lines.append("### Gate Decision")
+            gate = run.get("gate_decision", {})
+            lines.append(f"- ready: `{gate.get('ready')}`")
+            for reason in gate.get("reasons", []):
+                lines.append(f"- reason: {reason}")
+            lines.append("")
+            lines.append("### Required Failed Items")
+            lines.append("| id | severity | description | evidence |")
+            lines.append("|---|---|---|---|")
+            failed_required = [i for i in run.get("failed_items", []) if i.get("required")]
+            if not failed_required:
+                lines.append("| - | - | none | - |")
+            else:
+                for item in failed_required:
+                    lines.append(f"| {item['id']} | {item['severity']} | {item['description']} | {item['evidence']} |")
             lines.append("")
             lines.append("### Manual Review Required")
-            for check in run.get("checks", []):
-                if check["status"] == "manual":
-                    lines.append(f"- `{check['check_id']}` {check['description']}")
+            manual_items = run.get("manual_items", [])
+            if not manual_items:
+                lines.append("- none")
+            else:
+                for item in manual_items:
+                    lines.append(f"- `{item['id']}` {item['description']}")
             lines.append("")
         return "\n".join(lines)
 
@@ -280,6 +409,15 @@ class QualityController:
             try:
                 pipeline_result = self.run_pipeline_for_draft(draft)
                 checks = self.evaluate_checks(pipeline_result)
+                check_summary = self._aggregate_statuses(checks)
+                metrics = self._calc_run_metrics(checks)
+                issues = self._extract_issue_lists(checks)
+                gate_reasons: list[str] = []
+                if pipeline_result.get("status") != "ok":
+                    gate_reasons.append("pipeline_status_failed")
+                if metrics.get("required_fail_count", 0) > 0:
+                    gate_reasons.append("required_checks_failed")
+                gate_ready = len(gate_reasons) == 0
                 runs.append(
                     {
                         "draft_name": draft.name,
@@ -288,9 +426,14 @@ class QualityController:
                         "pipeline_elapsed_ms": pipeline_result.get("elapsed_ms"),
                         "pipeline_warnings_count": pipeline_result.get("warnings_count"),
                         "pipeline_errors_count": pipeline_result.get("errors_count"),
-                        "artifacts": pipeline_result.get("artifacts", {}),
+                        "artifacts": self._artifacts_with_existence(pipeline_result.get("artifacts", {})),
                         "checks": [asdict(c) for c in checks],
-                        "check_summary": self._aggregate_statuses(checks),
+                        "check_summary": check_summary,
+                        "compliance_metrics": metrics,
+                        "failed_items": issues["failed_items"],
+                        "warning_items": issues["warning_items"],
+                        "manual_items": issues["manual_items"],
+                        "gate_decision": {"ready": gate_ready, "reasons": gate_reasons},
                     }
                 )
             except Exception as exc:  # pragma: no cover
@@ -305,6 +448,19 @@ class QualityController:
                         "artifacts": {},
                         "checks": [],
                         "check_summary": {"pass": 0, "fail": 1, "warn": 0, "manual": 0},
+                        "compliance_metrics": {
+                            "auto_evaluated_count": 0,
+                            "required_auto_evaluated_count": 0,
+                            "auto_pass_rate": 0.0,
+                            "required_auto_pass_rate": 0.0,
+                            "manual_required_count": 0,
+                            "required_fail_count": 1,
+                            "required_warn_count": 0,
+                        },
+                        "failed_items": [],
+                        "warning_items": [],
+                        "manual_items": [],
+                        "gate_decision": {"ready": False, "reasons": ["pipeline_exception"]},
                         "failure": str(exc),
                     }
                 )
@@ -318,8 +474,10 @@ def _build_cli() -> argparse.ArgumentParser:
     if load_dotenv is not None:
         load_dotenv()
     parser = argparse.ArgumentParser(description="STOFabric quality controller")
-    parser.add_argument("--run-all", action="store_true", help="Run quality checks on all 3 default drafts")
-    parser.add_argument("--test", type=str, default=None, help="Run quality checks on a single draft (name or full path)")
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--run-all", action="store_true", help="Run quality checks on all 3 default drafts")
+    mode_group.add_argument("--test", type=str, default=None, help="Run quality checks on a single draft (name or full path)")
+    parser.add_argument("--drafts-dir", type=Path, default=None, help="Directory containing three default draft files")
     parser.add_argument("--rules", type=Path, default=None, help="Path to mapping-rules.yaml")
     parser.add_argument("--schema", type=Path, default=None, help="Path to schema JSON")
     parser.add_argument(
@@ -369,16 +527,24 @@ def main() -> None:
         verbose=verbose,
     )
 
-    if not args.run_all and not args.test:
-        print(json.dumps({"error": "Specify --run-all or --test"}, ensure_ascii=False, indent=2))
-        raise SystemExit(1)
-
     drafts: list[Path]
+    drafts_dir = args.drafts_dir or Path(os.getenv("STO_QUALITY_DRAFTS_DIR", str(DEFAULT_DRAFTS_DIR)))
     if args.run_all:
-        drafts_dir = Path(os.getenv("STO_QUALITY_DRAFTS_DIR", str(DEFAULT_DRAFTS_DIR)))
-        drafts = qc.discover_drafts(drafts_dir=drafts_dir)
+        drafts, missing = qc.discover_drafts(drafts_dir=drafts_dir)
+        if missing:
+            print(
+                json.dumps(
+                    {
+                        "error": "Missing required drafts for --run-all",
+                        "missing": [str(p) for p in missing],
+                        "drafts_dir": str(drafts_dir),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            raise SystemExit(1)
     else:
-        drafts_dir = Path(os.getenv("STO_QUALITY_DRAFTS_DIR", str(DEFAULT_DRAFTS_DIR)))
         drafts = [_resolve_single_test(args.test, drafts_dir=drafts_dir)]
 
     if not drafts:
@@ -388,14 +554,21 @@ def main() -> None:
     started = time.time()
     result = qc.run_for_drafts(drafts)
     elapsed_ms = int((time.time() - started) * 1000)
+    runs = result["report"].get("runs", [])
+    any_pipeline_failed = any(r.get("pipeline_status") != "ok" for r in runs)
+    any_gate_failed = any(not r.get("gate_decision", {}).get("ready", False) for r in runs)
+    final_status = "failed" if (any_pipeline_failed or any_gate_failed) else "ok"
     summary = {
-        "status": "ok",
+        "status": final_status,
         "elapsed_ms": elapsed_ms,
         "drafts_processed": len(drafts),
         "output_files": result["output_files"],
         "aggregate_checks": result["report"]["aggregate_checks"],
+        "aggregate_metrics": result["report"].get("aggregate_metrics", {}),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if final_status == "failed":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
