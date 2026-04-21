@@ -1,0 +1,6 @@
+python-docx
+PyYAML
+jsonschema
+rich
+docx2txt
+python-dotenv
